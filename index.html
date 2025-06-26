@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Controlled Substance Inventory</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f8fafc;
+      margin: 0;
+      min-height: 100vh;
+      padding: 32px 0;
+    }
+    .container {
+      display: flex;
+      max-width: 1200px;
+      margin: auto;
+      background: #fff;
+      border-radius: 18px;
+      box-shadow: 0 2px 18px #0001;
+      padding: 24px;
+      gap: 36px;
+    }
+    .main { flex: 1; min-width: 370px; }
+    .sidebar { width: 370px; min-width: 270px; border-left: 2px solid #f1f5f9; padding-left: 32px;}
+    h1 { text-align: center; color: #b91c1c; font-size: 2em; margin-bottom: 24px;}
+    label { font-weight: 600; margin-bottom: 2px; display: block;}
+    input[type="text"], input:not([type]), select {
+      text-transform: uppercase;
+      width: 100%; margin-top: 4px; margin-bottom: 14px;
+      padding: 8px; border-radius: 8px; border: 1px solid #e5e7eb; font-size: 1em;
+    }
+    input[type="number"], input[type="date"] { width: 100%; margin-top: 4px; margin-bottom: 14px;
+      padding: 8px; border-radius: 8px; border: 1px solid #e5e7eb; font-size: 1em; }
+    button {
+      background: #b91c1c; color: #fff; border: none; border-radius: 8px;
+      padding: 10px 24px; font-weight: bold; cursor: pointer; width: 100%; font-size: 1em; margin-top: 4px;
+      transition: background .2s;
+    }
+    button:hover { background: #7f1d1d;}
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: .99em;}
+    th, td { padding: 8px 4px; text-align: left;}
+    thead th { background: #fef2f2; font-weight: 600;}
+    tr:nth-child(even) { background: #f9fafb;}
+    tr.selected { background: #f1f5f9 !important; }
+    .msg { color: #059669; margin-bottom: 14px; font-weight: 600; text-align: center;}
+    .err { color: #dc2626; margin-bottom: 14px; font-weight: 600; text-align: center;}
+    .search-box { margin-bottom: 18px; }
+    .sidebar h2 { font-size: 1.14em; color: #991b1b; margin-bottom: 16px;}
+    .sidebar table { font-size: .98em; margin-top: 6px;}
+    .sidebar td, .sidebar th { padding: 6px 4px;}
+    .sidebar th { background: #fde68a;}
+    .sidebar .empty { color: #aaa; margin-top: 12px;}
+    @media (max-width: 1100px) {
+      .container { flex-direction: column; gap: 0; }
+      .sidebar { width: 100%; padding-left: 0; border-left: none; border-top: 2px solid #f1f5f9; margin-top: 32px;}
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="main">
+      <h1>Controlled Substance Inventory</h1>
+      <div class="search-box">
+        <label for="search">Search (Brand or Generic Name):</label>
+        <input type="text" id="search" placeholder="Search by drug name..." oninput="applySearch()" />
+      </div>
+      <form id="csForm" autocomplete="off" onsubmit="event.preventDefault(); addTransaction();">
+        <label for="date">Date</label>
+        <input type="date" id="date" required value="" />
+
+        <label for="generic">Generic Name *</label>
+        <input type="text" id="generic" required maxlength="40" placeholder="e.g., MORPHINE" />
+
+        <label for="brand">Brand Name</label>
+        <input type="text" id="brand" maxlength="40" placeholder="e.g., MS CONTIN" />
+
+        <label for="strength">Strength *</label>
+        <input type="text" id="strength" required maxlength="20" placeholder="e.g., 10MG" />
+
+        <label for="qty">Quantity *</label>
+        <input type="number" id="qty" required min="1" max="10000" placeholder="e.g., 30" />
+
+        <label for="action">Action *</label>
+        <select id="action" required>
+          <option value="">Select</option>
+          <option value="ADD">ADD (RECEIVED)</option>
+          <option value="REMOVE">REMOVE (DISPENSED/LOSS)</option>
+          <option value="ADJUST">ADJUST (INVENTORY/CORRECTION)</option>
+        </select>
+
+        <label for="initials">Your Initials *</label>
+        <input type="text" id="initials" required maxlength="6" placeholder="e.g., AJ" style="text-transform:uppercase;" />
+
+        <button type="submit">Add Transaction</button>
+      </form>
+      <div id="msg"></div>
+      <div id="tableDiv"><p style="color:#888;">Loading...</p></div>
+    </div>
+    <div class="sidebar" id="sidebar">
+      <h2>Last 5 Transactions</h2>
+      <div id="detailDiv"><div class="empty">Select a drug or search to view details.</div></div>
+    </div>
+  </div>
+  <script>
+    // REPLACE with your SheetDB endpoint:
+    const SHEETDB_API = "https://sheetdb.io/api/v1/jwv77fu5ykcvy";
+
+    let allRows = [];      // All loaded data
+    let filteredRows = []; // Filtered for search
+    let selectedDrug = null; // {generic, brand, strength}
+
+    // Utility: format date (YYYY-MM-DD) to MM/DD/YYYY
+    function niceDate(dateStr) {
+      if (!dateStr) return '';
+      const d = new Date(dateStr);
+      return d.toLocaleDateString();
+    }
+
+    // --- Table Render ---
+    function renderTable(rows) {
+      if (!rows || !rows.length) {
+        document.getElementById('tableDiv').innerHTML = '<p style="color:#888;">No records yet.</p>';
+        return;
+      }
+      let html = `<table><thead><tr>
+        <th>Date</th><th>Generic</th><th>Brand</th>
+        <th>Strength</th><th>Qty</th><th>Action</th><th>Initials</th>
+      </tr></thead><tbody>`;
+      rows.slice().reverse().forEach((r, idx) => {
+        // If selectedDrug matches this row, highlight
+        let selected = (selectedDrug &&
+                        r["Generic Name"] === selectedDrug.generic &&
+                        r["Brand Name"] === selectedDrug.brand &&
+                        r.Strength === selectedDrug.strength) ? 'selected' : '';
+        html += `<tr class="${selected}" style="cursor:pointer" onclick="selectDrug('${encodeURIComponent(r["Generic Name"]||"")}', '${encodeURIComponent(r["Brand Name"]||"" )}', '${encodeURIComponent(r.Strength||"")}' )">
+          <td>${niceDate(r.Date)}</td>
+          <td>${r["Generic Name"] || ''}</td>
+          <td>${r["Brand Name"] || ''}</td>
+          <td>${r.Strength || ''}</td>
+          <td>${r.Qty || ''}</td>
+          <td>${r.Action || ''}</td>
+          <td>${r.Initials || ''}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+      document.getElementById('tableDiv').innerHTML = html;
+    }
+
+    // --- Sidebar Render: Last 5 Transactions for Selected Drug ---
+    function renderSidebar() {
+      const div = document.getElementById('detailDiv');
+      if (!selectedDrug) {
+        div.innerHTML = '<div class="empty">Select a drug or search to view details.</div>';
+        return;
+      }
+      // Find all transactions matching the selected drug (match generic+brand+strength)
+      let matches = allRows.filter(r =>
+        r["Generic Name"] === selectedDrug.generic &&
+        r["Brand Name"] === selectedDrug.brand &&
+        r.Strength === selectedDrug.strength
+      );
+      if (!matches.length) {
+        div.innerHTML = '<div class="empty">No transactions found for this drug.</div>';
+        return;
+      }
+      // Sort latest first and pick last 5
+      matches = matches.sort((a, b) => new Date(b.Date) - new Date(a.Date)).slice(0, 5);
+      let html = `<table>
+        <thead><tr>
+          <th>Date</th><th>Qty</th><th>Action</th><th>Initials</th>
+        </tr></thead><tbody>`;
+      matches.forEach(r => {
+        html += `<tr>
+          <td>${niceDate(r.Date)}</td>
+          <td>${r.Qty || ''}</td>
+          <td>${r.Action || ''}</td>
+          <td>${r.Initials || ''}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+      div.innerHTML = html;
+    }
+
+    // --- Select Drug for Sidebar (by row click) ---
+    function selectDrug(generic, brand, strength) {
+      selectedDrug = {
+        generic: decodeURIComponent(generic),
+        brand: decodeURIComponent(brand),
+        strength: decodeURIComponent(strength)
+      };
+      renderTable(filteredRows);
+      renderSidebar();
+    }
+
+    // --- Search ---
+    function applySearch() {
+      const term = document.getElementById('search').value.trim().toUpperCase();
+      if (!term) {
+        filteredRows = allRows.slice();
+        selectedDrug = null;
+        renderSidebar();
+      } else {
+        filteredRows = allRows.filter(r =>
+          (r["Generic Name"] && r["Generic Name"].includes(term)) ||
+          (r["Brand Name"] && r["Brand Name"].includes(term))
+        );
+        // Auto-select first matching drug for sidebar (if any)
+        if (filteredRows.length) {
+          selectedDrug = {
+            generic: filteredRows[0]["Generic Name"] || "",
+            brand: filteredRows[0]["Brand Name"] || "",
+            strength: filteredRows[0]["Strength"] || ""
+          };
+        } else {
+          selectedDrug = null;
+        }
+        renderSidebar();
+      }
+      renderTable(filteredRows);
+    }
+
+    // --- Add Transaction ---
+    function addTransaction() {
+      const date = document.getElementById('date').value;
+      const generic = document.getElementById('generic').value.trim().toUpperCase();
+      const brand = document.getElementById('brand').value.trim().toUpperCase();
+      const strength = document.getElementById('strength').value.trim().toUpperCase();
+      const qty = document.getElementById('qty').value.trim();
+      const action = document.getElementById('action').value.trim().toUpperCase();
+      const initials = document.getElementById('initials').value.trim().toUpperCase();
+
+      if (!date || !generic || !strength || !qty || !action || !initials) {
+        document.getElementById('msg').innerHTML = '<div class="err">Please fill all required fields.</div>';
+        return;
+      }
+
+      document.getElementById('msg').innerHTML = 'Saving...';
+
+      fetch(SHEETDB_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          data: [{
+            Date: date,
+            "Generic Name": generic,
+            "Brand Name": brand,
+            Strength: strength,
+            Qty: qty,
+            Action: action,
+            Initials: initials
+          }]
+        })
+      })
+      .then(res => res.json())
+      .then(() => {
+        document.getElementById('msg').innerHTML = '<div class="msg">Transaction added!</div>';
+        document.getElementById('csForm').reset();
+        fetchAndRender();
+      })
+      .catch(() => document.getElementById('msg').innerHTML = '<div class="err">Error saving data.</div>');
+    }
+
+    // --- Fetch and Render All ---
+    function fetchAndRender() {
+      document.getElementById('tableDiv').innerHTML = '<p style="color:#888;">Loading...</p>';
+      fetch(SHEETDB_API)
+        .then(res => res.json())
+        .then(rows => {
+          allRows = rows;
+          filteredRows = rows;
+          renderTable(filteredRows);
+          // If a drug was previously selected, keep selection updated
+          renderSidebar();
+        })
+        .catch(() => document.getElementById('tableDiv').innerHTML = '<p class="err">Error loading data.</p>');
+    }
+
+    fetchAndRender();
+  </script>
+</body>
+</html>
